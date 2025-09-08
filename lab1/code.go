@@ -24,10 +24,10 @@ type Agent struct {
 	mu            sync.Mutex
 }
 
-func (a *Agent) Run(wg *sync.WaitGroup) {
+func (a *Agent) Run(env *Environment, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for job := range a.jobs {
-		fmt.Printf("Agent %d starts client %d (complexity %d)\n", a.id, job.id, job.complexity)
+		fmt.Printf("Agent %d starts job %d (complexity %d)\n", a.id, job.id, job.complexity)
 		a.mu.Lock()
 		a.jobStartTime = time.Now()
 		a.jobComplexity = job.complexity
@@ -42,7 +42,16 @@ func (a *Agent) Run(wg *sync.WaitGroup) {
 		a.totalTime += int(time.Since(a.jobStartTime).Seconds())
 		a.mu.Unlock()
 
-		fmt.Printf("Agent %d finished client %d\n", a.id, job.id)
+		fmt.Printf("Agent %d finished job %d\n", a.id, job.id)
+		
+		env.mu.Lock()
+		env.jobsDone++
+		if env.jobsDone >= env.jobsMax {
+			fmt.Println("Max jobs processed, stopping system")
+			env.cancel()
+		}
+		env.mu.Unlock()
+
 	}
 }
 
@@ -67,6 +76,9 @@ type Environment struct {
 	agents  []*Agent
 	jobs    chan Job
 	jobsMax int
+	jobsDone int
+	mu sync.Mutex
+	cancel context.CancelFunc
 }
 
 func (env *Environment) createAgents(n int) {
@@ -83,7 +95,6 @@ func (env *Environment) createAgents(n int) {
 
 func (env *Environment) createJobs(ctx context.Context) {
 	jobID := 1
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -115,6 +126,9 @@ func (env *Environment) distributeJobs(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			fmt.Println("Distributor stopped: cancel signal received")
+			for _, a := range env.agents {
+				close(a.jobs)
+			}
 			return
 
 		case job, ok := <-env.jobs:
@@ -160,5 +174,27 @@ func (env *Environment) getAgentForJob() (*Agent, error) {
 }
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
 
+	ctx, cancel := context.WithCancel(context.Background())
+
+	env :=  &Environment {
+		jobs: make(chan Job, 20),
+		jobsMax: 10, 
+		cancel: cancel,
+	}
+
+	env.createAgents(10)
+
+	var wg sync.WaitGroup
+	for _, agent := range env.agents {
+		wg.Add(1)
+		go agent.Run(env, &wg)
+	}
+
+	go env.createJobs(ctx)
+	env.distributeJobs(ctx)
+
+	wg.Wait()
+	fmt.Println()
 }
