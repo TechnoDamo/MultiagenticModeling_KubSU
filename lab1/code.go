@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+	"sort"
 )
 
 type Job struct {
@@ -19,7 +20,7 @@ type Agent struct {
 	isJobRun      bool
 	jobStartTime  time.Time
 	jobComplexity int
-	totalClients  int
+	totalJobs  int
 	totalTime     int
 	mu            sync.Mutex
 }
@@ -38,7 +39,7 @@ func (a *Agent) Run(env *Environment, wg *sync.WaitGroup) {
 
 		a.mu.Lock()
 		a.isJobRun = false
-		a.totalClients++
+		a.totalJobs++
 		a.totalTime += int(time.Since(a.jobStartTime).Seconds())
 		a.mu.Unlock()
 
@@ -107,7 +108,7 @@ func (env *Environment) createJobs(ctx context.Context) {
 			time.Sleep(sleepDuration)
 
 			// Random job complexity (1-10 seconds)
-			complexity := rand.Intn(10) + 1
+			complexity := rand.Intn(2) + 1
 			job := Job{
 				id:         jobID,
 				complexity: complexity,
@@ -136,9 +137,15 @@ func (env *Environment) distributeJobs(ctx context.Context) {
 				fmt.Println("Distributor stopping: jobs channel closed")
 				return
 			}
+			if env.jobsDone >= env.jobsMax {
+				ctx.Done()
+				fmt.Println("Max jobs processed, stopping system \n\n\n")
+				return
+			}
 			agent, err := env.getAgentForJob()
 			if err != nil {
 				fmt.Println("No agent available")
+				return
 			} else {
 				fmt.Printf("Agent %d selected\n", agent.id)
 			}
@@ -173,6 +180,33 @@ func (env *Environment) getAgentForJob() (*Agent, error) {
 	return minAgent, nil
 }
 
+func (env *Environment) makeReport() {
+	env.mu.Lock()
+	defer env.mu.Unlock()
+
+	sort.Slice(env.agents, func(i, j int) bool {
+		ai := env.agents[i]
+		aj := env.agents[j]
+
+		ai.mu.Lock()
+		aj.mu.Lock()
+		defer ai.mu.Unlock()
+		defer aj.mu.Unlock()
+
+		if ai.totalJobs != aj.totalJobs {
+			return ai.totalJobs > aj.totalJobs // decreasing
+		}
+		return ai.totalTime < aj.totalTime // increasing if totalJobs equal
+	})
+
+	fmt.Println("Agent stats:")
+	for _, a := range env.agents {
+		a.mu.Lock()
+		fmt.Printf("Agent %d: totalJobs=%d, totalTime=%d\n", a.id, a.totalJobs, a.totalTime)
+		a.mu.Unlock()
+	}
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
@@ -180,7 +214,7 @@ func main() {
 
 	env :=  &Environment {
 		jobs: make(chan Job, 20),
-		jobsMax: 10, 
+		jobsMax: 25, 
 		cancel: cancel,
 	}
 
@@ -193,8 +227,9 @@ func main() {
 	}
 
 	go env.createJobs(ctx)
-	env.distributeJobs(ctx)
+	go env.distributeJobs(ctx)
 
 	wg.Wait()
+	env.makeReport()
 	fmt.Println()
 }
